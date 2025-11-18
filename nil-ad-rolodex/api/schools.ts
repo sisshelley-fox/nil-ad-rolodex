@@ -1,6 +1,8 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+// api/schools.ts
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
+// ✅ No imports at all — keeps TypeScript happy without extra packages
+
+export default function handler(req: any, res: any) {
   const schools = [
     {
       school_id: "uk",
