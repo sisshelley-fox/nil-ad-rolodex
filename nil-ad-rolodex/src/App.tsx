@@ -1,4 +1,3 @@
-import React from "react";
 import AthleticDirectorRolodex from "./components/AthleticDirectorRolodex";
 
 function App() {
