@@ -1,6 +1,6 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+// api/schools.js
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
+export default function handler(req, res) {
   const schools = [
     {
       school_id: "uk",
