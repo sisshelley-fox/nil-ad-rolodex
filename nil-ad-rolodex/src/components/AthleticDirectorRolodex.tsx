@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { AdGenerator } from "./AdGenerator"; // ✅ NEW
 
 interface SchoolRow {
   school_id: string;
@@ -55,7 +56,7 @@ const AthleticDirectorRolodex: React.FC = () => {
           </div>
         </header>
 
-        {/* Simple layout: list on left, details on right */}
+        {/* Simple layout: list on left, details + generator on right */}
         <section
           style={{
             display: "grid",
@@ -140,7 +141,7 @@ const AthleticDirectorRolodex: React.FC = () => {
           >
             {!selectedSchool && (
               <p style={{ color: "#9ca3af" }}>
-                Select a school from the list to view details and (later) run AI enrichment.
+                Select a school from the list to view details and run AI enrichment.
               </p>
             )}
 
@@ -164,21 +165,9 @@ const AthleticDirectorRolodex: React.FC = () => {
                   )}
                 </p>
 
+                {/* 🔥 Drop the AD Generator here */}
                 <div style={{ marginTop: "0.75rem" }}>
-                  <button
-                    type="button"
-                    style={{
-                      padding: "0.35rem 0.75rem",
-                      fontSize: "0.75rem",
-                      borderRadius: "0.375rem",
-                      border: "none",
-                      background: "#b91c1c",
-                      color: "#f9fafb",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Run AI Enrichment (coming soon)
-                  </button>
+                  <AdGenerator />
                 </div>
               </div>
             )}

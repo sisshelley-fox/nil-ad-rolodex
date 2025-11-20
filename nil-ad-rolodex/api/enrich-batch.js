@@ -1,95 +1,91 @@
-// api/enrich-batch.js
-// 🔧 Phase 2 skeleton: batch enrichment endpoint.
-// Uses sheetsHelper + a fake AI enrichment fn for now.
+const GEMINI_API_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
-import { getSchoolsByIds, appendADContactsRows } from "./sheetsHelper.js";
-
-export default async function handler(req, res) {
-  try {
-    if (req.method === "GET") {
-      // Simple GET mode for easy testing:
-      // /api/enrich-batch?ids=uk,uga
-      const urlObj = new URL(req.url, "http://localhost");
-      const idsParam = urlObj.searchParams.get("ids");
-      const schoolIds = idsParam ? idsParam.split(",").map((id) => id.trim()) : [];
-
-      if (schoolIds.length === 0) {
-        res
-          .status(400)
-          .json({ error: "Provide ?ids=uk,uga (comma-separated school_ids)" });
-        return;
-      }
-
-      const result = await processBatch(schoolIds);
-      res.status(200).json({ mode: "GET-demo", ...result });
-      return;
-    }
-
-    if (req.method === "POST") {
-      // Real batch mode:
-      // body: { "schoolIds": ["uk", "uga"] }
-      const body =
-        typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-      const schoolIds = body.schoolIds;
-
-      if (!Array.isArray(schoolIds) || schoolIds.length === 0) {
-        res
-          .status(400)
-          .json({ error: "Body must include { schoolIds: [\"uk\", \"uga\"] }" });
-        return;
-      }
-
-      const result = await processBatch(schoolIds);
-      res.status(200).json({ mode: "POST", ...result });
-      return;
-    }
-
-    res.setHeader("Allow", "GET, POST");
-    res.status(405).json({ error: "Method not allowed. Use GET or POST." });
-  } catch (err) {
-    console.error("Error in /api/enrich-batch:", err);
-    res.status(500).json({ error: "Internal server error" });
+async function enrichSchoolWithAI(school) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing GEMINI_API_KEY");
   }
+
+  const prompt = `
+You are helping build a contact database for college athletic departments.
+
+Given this school:
+- Name: ${school.school_name}
+- State: ${school.state || "Unknown"}
+- Conference: ${school.conference || "Unknown"}
+- Division: ${school.division || "Unknown"}
+
+1. Identify the current Athletic Director (or equivalent role if AD title differs).
+2. Provide:
+   - AD full name
+   - AD title
+   - Best official email (no generic catch-all if possible)
+   - Phone number (direct or main athletics office)
+3. If available, include an assistant or deputy contact.
+4. Provide links (staff directory, athletics site, etc.) as source URLs.
+5. Return ONLY JSON with this shape:
+{
+  "ad_name": "",
+  "ad_title": "",
+  "ad_email": "",
+  "ad_phone": "",
+  "assistant_name": "",
+  "assistant_email": "",
+  "confidence": 0.0,
+  "notes": "",
+  "source_urls": ["", ""]
 }
+`;
 
-async function processBatch(schoolIds) {
-  // 1) Look up base school data (later from Google Sheets)
-  const schools = await getSchoolsByIds(schoolIds);
-
-  // 2) "Enrich" with fake AI for now
-  const enriched = await Promise.all(
-    schools.map(async (school) => {
-      const aiResult = await fakeEnrichSchoolWithAI(school);
-      return {
-        school_id: school.school_id,
-        school_name: school.school_name,
-        ...aiResult,
-      };
-    })
-  );
-
-  // 3) "Write" to AD_Contacts (stub just logs for now)
-  const sheetsResult = await appendADContactsRows(enriched);
-
-  return {
-    requestedCount: schoolIds.length,
-    foundSchools: schools.length,
-    enrichedCount: enriched.length,
-    sheetsResult,
+  const body = {
+    contents: [
+      {
+        parts: [{ text: prompt }],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: "application/json",
+    },
   };
-}
 
-// 👉 This will later call Gemini with your API key.
-async function fakeEnrichSchoolWithAI(school) {
+  const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    console.error("Gemini API error", await res.text());
+    throw new Error("Gemini API error");
+  }
+
+  const data = await res.json();
+
+  // For JSON responses, Gemini returns JSON string in candidates[0].content.parts[0].text
+  const text =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    console.error("Failed to parse Gemini JSON:", text);
+    parsed = {};
+  }
+
   return {
-    ad_name: `Demo AD for ${school.school_name}`,
-    ad_title: "Athletic Director",
-    ad_email: `ad@${school.school_id}.edu`,
-    ad_phone: "555-000-0000",
-    assistant_name: null,
-    assistant_email: null,
-    confidence: 0.1,
-    notes: "Demo enrichment data – replace with Gemini result.",
-    source_urls: [],
+    ad_name: parsed.ad_name || null,
+    ad_title: parsed.ad_title || null,
+    ad_email: parsed.ad_email || null,
+    ad_phone: parsed.ad_phone || null,
+    assistant_name: parsed.assistant_name || null,
+    assistant_email: parsed.assistant_email || null,
+    confidence:
+      typeof parsed.confidence === "number" ? parsed.confidence : null,
+    notes: parsed.notes || "",
+    source_urls: Array.isArray(parsed.source_urls)
+      ? parsed.source_urls
+      : [],
   };
 }
