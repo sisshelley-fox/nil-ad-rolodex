@@ -5,16 +5,28 @@ import { google } from "googleapis";
 function getSheetsClient() {
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   const serviceEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
-  if (!spreadsheetId || !serviceEmail || !privateKey) {
+  const base64Key = process.env.GOOGLE_PRIVATE_KEY_B64;
+  let rawKey = process.env.GOOGLE_PRIVATE_KEY;
+
+  if (!spreadsheetId || !serviceEmail || (!base64Key && !rawKey)) {
     throw new Error(
-      "Missing one of GOOGLE_SHEETS_ID / GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_PRIVATE_KEY"
+      "Missing one of GOOGLE_SHEETS_ID / GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_PRIVATE_KEY(_B64)"
     );
   }
 
-  // Turn the \n sequences in .env into real newlines for the PEM key
-  privateKey = privateKey.replace(/\\n/g, "\n");
+  let privateKey;
+
+  if (base64Key) {
+    // Decode the Base64-encoded PEM
+    privateKey = Buffer.from(base64Key, "base64").toString("utf8");
+  } else {
+    // Local fallback: handle \n-escaped key in .env
+    privateKey = rawKey;
+    if (privateKey.includes("\\n")) {
+      privateKey = privateKey.replace(/\\n/g, "\n");
+    }
+  }
 
   const jwtClient = new google.auth.JWT({
     email: serviceEmail,
@@ -26,6 +38,7 @@ function getSheetsClient() {
 
   return { sheets, spreadsheetId };
 }
+
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
