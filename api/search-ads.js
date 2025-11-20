@@ -94,7 +94,7 @@ export default async function handler(req, res) {
 
     // 1) Ask Gemini for rows shaped exactly like the sheet
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+   const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
     const prompt = `
 You are helping build a Google Sheet for The Collective Engine called "Contacts_AD_NIL".
