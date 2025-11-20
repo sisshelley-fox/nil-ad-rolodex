@@ -6,8 +6,9 @@ function getSheetsClient() {
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   const serviceEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 
+  // New: prefer base64 key in Vercel, fall back to raw key locally
   const base64Key = process.env.GOOGLE_PRIVATE_KEY_B64;
-  let rawKey = process.env.GOOGLE_PRIVATE_KEY;
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY;
 
   if (!spreadsheetId || !serviceEmail || (!base64Key && !rawKey)) {
     throw new Error(
@@ -18,14 +19,16 @@ function getSheetsClient() {
   let privateKey;
 
   if (base64Key) {
-    // Decode the Base64-encoded PEM
+    // Decode from Base64 back to the original string
     privateKey = Buffer.from(base64Key, "base64").toString("utf8");
   } else {
-    // Local fallback: handle \n-escaped key in .env
+    // Local dev fallback
     privateKey = rawKey;
-    if (privateKey.includes("\\n")) {
-      privateKey = privateKey.replace(/\\n/g, "\n");
-    }
+  }
+
+  // IMPORTANT: convert literal "\n" into real newlines (for both cases)
+  if (privateKey && privateKey.includes("\\n")) {
+    privateKey = privateKey.replace(/\\n/g, "\n");
   }
 
   const jwtClient = new google.auth.JWT({
@@ -38,6 +41,7 @@ function getSheetsClient() {
 
   return { sheets, spreadsheetId };
 }
+
 
 
 export default async function handler(req, res) {
