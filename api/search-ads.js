@@ -1,30 +1,30 @@
 // api/search-ads.js
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { google } from "googleapis";
 
-// ==== Google Sheets client (service account) ====
+// ===================== Google Sheets helper ===================== //
 
 function getSheetsClient() {
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  const serviceEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   let privateKey = process.env.GOOGLE_PRIVATE_KEY;
 
-  if (!spreadsheetId || !clientEmail || !privateKey) {
+  if (!spreadsheetId || !serviceEmail || !privateKey) {
     throw new Error(
       "Missing one of GOOGLE_SHEETS_ID / GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_PRIVATE_KEY"
     );
   }
 
-  // Fix escaped newlines in the private key (common on Vercel)
-  privateKey = privateKey.replace(/\\n/g, "\n");
+  // Vercel / env often store private keys with literal "\n". Fix that:
+  if (privateKey.includes("\\n")) {
+    privateKey = privateKey.replace(/\\n/g, "\n");
+  }
 
-  const auth = new google.auth.JWT(
-    clientEmail,
-    undefined,
-    privateKey,
-    ["https://www.googleapis.com/auth/spreadsheets"]
-  );
+  const auth = new google.auth.JWT({
+    email: serviceEmail,
+    key: privateKey,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
 
   const sheets = google.sheets({
     version: "v4",
@@ -34,12 +34,63 @@ function getSheetsClient() {
   return { sheets, spreadsheetId };
 }
 
-// ==== Gemini model ====
+// ===================== Gemini via raw HTTP ===================== //
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 
-// Columns we expect in the Contacts_AD_NIL sheet, in order.
-// Make your header row in Contacts_AD_NIL match this order.
+/**
+ * Call Gemini using the HTTP REST API (not the SDK).
+ * Uses v1/models/gemini-1.5-flash:generateContent
+ */
+async function callGemini(prompt) {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Missing GEMINI_API_KEY");
+  }
+
+  const url =
+    "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" +
+    encodeURIComponent(GEMINI_API_KEY);
+
+  const body = {
+    contents: [
+      {
+        parts: [{ text: prompt }],
+      },
+    ],
+  };
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    console.error("Gemini API error:", resp.status, errText);
+    throw new Error(
+      `Gemini API error: ${resp.status} ${resp.statusText} - ${errText}`
+    );
+  }
+
+  const data = await resp.json();
+
+  const parts =
+    data.candidates?.[0]?.content?.parts?.map((p) => p.text || "") || [];
+
+  const text = parts.join("").trim();
+
+  if (!text) {
+    throw new Error("Gemini returned empty text");
+  }
+
+  return text;
+}
+
+// ===================== Sheet column definition ===================== //
+
 const CONTACT_COLUMNS = [
   "school_id",
   "school_name",
@@ -61,15 +112,15 @@ const CONTACT_COLUMNS = [
   "verified_by",
   "created_at",
   "created_by",
-  "notes"
+  "notes",
 ];
 
-// ==== API handler ====
+// ===================== API handler ===================== //
 
 /**
  * POST /api/search-ads
  * Body: { query: string, batchSize?: number }
- * Response: { added: number, preview: any[] }
+ * Response: { added: number, preview: any[], message?: string }
  */
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -77,10 +128,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("Missing GEMINI_API_KEY");
-    }
-
     const { query, batchSize } = req.body || {};
 
     if (!query || typeof query !== "string") {
@@ -92,10 +139,7 @@ export default async function handler(req, res) {
     const sizeRaw = Number(batchSize) || 10;
     const size = Math.max(1, Math.min(sizeRaw, 50)); // 1–50 per run
 
-    // 1) Ask Gemini for rows shaped exactly like the sheet
-
-   const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
+    // 1) Build prompt for Gemini
     const prompt = `
 You are helping build a Google Sheet for The Collective Engine called "Contacts_AD_NIL".
 Each row represents ONE college athletic director or NIL decision-maker.
@@ -119,42 +163,12 @@ Rules:
 - "last_verified_date" is the date you believe the AD info was last valid, if you can infer it.
 
 Return ONLY a JSON array. No markdown, no commentary, no extra text.
-
-Example structure (keys only, values are examples):
-
-[
-  {
-    "school_id": "uk",
-    "school_name": "University of Kentucky",
-    "school_short_name": "Kentucky",
-    "association": "NCAA",
-    "division": "NCAA D1",
-    "conference": "SEC",
-    "state": "KY",
-    "city": "Lexington",
-    "athletic_director_name": "Mitch Barnhart",
-    "athletic_director_title": "Athletic Director",
-    "athletic_director_email": "ad@example.edu",
-    "athletic_director_phone": null,
-    "staff_directory_url": "https://ukathletics.com/staff-directory/...",
-    "linkedin_url": null,
-    "nil_policy_url": null,
-    "data_quality_score": 0.85,
-    "last_verified_date": "2025-01-01",
-    "verified_by": null,
-    "created_at": "2025-01-01T12:00:00Z",
-    "created_by": "NIL_AD_Rolodex_v1",
-    "notes": "Public AD contact, may route via staff."
-  }
-]
     `.trim();
 
-    const geminiResult = await model.generateContent(prompt);
-    const geminiResponse = await geminiResult.response;
+    // 2) Call Gemini via HTTP
+    let text = await callGemini(prompt);
 
-    let text = (geminiResponse.text() || "").trim();
-
-    // Strip ```json fences if they appear
+    // Strip ```json fences if it decides to be cute
     text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
 
     let parsed;
@@ -169,7 +183,7 @@ Example structure (keys only, values are examples):
       throw new Error("Gemini output was not a JSON array");
     }
 
-    // Normalize each row to our CONTACT_COLUMNS
+    // 3) Normalize to CONTACT_COLUMNS order
     const contacts = parsed.map((item) => {
       const obj = {};
       for (const key of CONTACT_COLUMNS) {
@@ -190,12 +204,12 @@ Example structure (keys only, values are examples):
       CONTACT_COLUMNS.map((key) => contact[key])
     );
 
-    // 2) Append to Google Sheets: Contacts_AD_NIL
+    // 4) Append to Google Sheets: Contacts_AD_NIL
     const { sheets, spreadsheetId } = getSheetsClient();
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: "Contacts_AD_NIL!A:Z", // assumes headers already exist in row 1
+      range: "Contacts_AD_NIL!A:Z", // assumes headers in row 1
       valueInputOption: "USER_ENTERED",
       insertDataOption: "INSERT_ROWS",
       requestBody: {
@@ -203,7 +217,7 @@ Example structure (keys only, values are examples):
       },
     });
 
-    // (Optional) log to Change_Log (if the sheet exists)
+    // 5) Log to Change_Log (non-fatal if it fails)
     try {
       const timestamp = new Date().toISOString();
       await sheets.spreadsheets.values.append({
@@ -216,11 +230,10 @@ Example structure (keys only, values are examples):
         },
       });
     } catch (logErr) {
-      // Don't blow up the main request if logging fails
       console.warn("Change_Log append failed (non-fatal):", logErr.message);
     }
 
-    // 3) Respond to the frontend
+    // 6) Respond to frontend
     return res.status(200).json({
       added: contacts.length,
       preview: contacts.slice(0, 3),
